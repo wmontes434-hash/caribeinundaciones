@@ -1,4 +1,9 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{color-scheme:light}body{margin:0;font:14px system-ui,sans-serif}[hidden]{display:none!important}img{max-width:100%}</style>
 <title>Inundaciones Frente Frío 2026</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -216,6 +221,8 @@ tbody tr:hover td { background: var(--bg); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
+</head>
+<body>
 <div class="wrap">
   <header class="top">
     <div>
@@ -562,7 +569,52 @@ function lev(a, b) {
 }
 function deptEq(a, b) { return a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0; }
 
+
+/* ---- Reproyección a WGS84 (GeoJSON exportados de ArcGIS/QGIS en coordenadas proyectadas) ---- */
+var TM = {
+  9377: { lat0: 4, lon0: -73, k: 0.9992, fe: 5000000, fn: 2000000 },
+  3114: { lat0: 4.59620041666667, lon0: -80.0775079166667, k: 1, fe: 1000000, fn: 1000000 },
+  3115: { lat0: 4.59620041666667, lon0: -77.0775079166667, k: 1, fe: 1000000, fn: 1000000 },
+  3116: { lat0: 4.59620041666667, lon0: -74.0775079166667, k: 1, fe: 1000000, fn: 1000000 },
+  3117: { lat0: 4.59620041666667, lon0: -71.0775079166667, k: 1, fe: 1000000, fn: 1000000 },
+  3118: { lat0: 4.59620041666667, lon0: -68.0775079166667, k: 1, fe: 1000000, fn: 1000000 }
+};
+function tmInverse(x, y, p) {
+  var a = 6378137, f = 1 / 298.257222101, e2 = f * (2 - f), ep2 = e2 / (1 - e2), R = Math.PI / 180;
+  function mer(phi) { return a * ((1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 * e2 * e2 / 256) * phi - (3 * e2 / 8 + 3 * e2 * e2 / 32 + 45 * e2 * e2 * e2 / 1024) * Math.sin(2 * phi) + (15 * e2 * e2 / 256 + 45 * e2 * e2 * e2 / 1024) * Math.sin(4 * phi) - (35 * e2 * e2 * e2 / 3072) * Math.sin(6 * phi)); }
+  var M = mer(p.lat0 * R) + (y - p.fn) / p.k, mu = M / (a * (1 - e2 / 4 - 3 * e2 * e2 / 64 - 5 * e2 * e2 * e2 / 256));
+  var e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+  var phi1 = mu + (3 * e1 / 2 - 27 * Math.pow(e1, 3) / 32) * Math.sin(2 * mu) + (21 * e1 * e1 / 16 - 55 * Math.pow(e1, 4) / 32) * Math.sin(4 * mu) + (151 * Math.pow(e1, 3) / 96) * Math.sin(6 * mu) + (1097 * Math.pow(e1, 4) / 512) * Math.sin(8 * mu);
+  var s = Math.sin(phi1), c = Math.cos(phi1), t = Math.tan(phi1), C1 = ep2 * c * c, T1 = t * t, N1 = a / Math.sqrt(1 - e2 * s * s), R1 = a * (1 - e2) / Math.pow(1 - e2 * s * s, 1.5), D = (x - p.fe) / (N1 * p.k);
+  var lat = phi1 - (N1 * t / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * Math.pow(D, 4) / 24 + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * Math.pow(D, 6) / 720);
+  var lon = p.lon0 * R + (D - (1 + 2 * T1 + C1) * Math.pow(D, 3) / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * Math.pow(D, 5) / 120) / c;
+  return [lon / R, lat / R];
+}
+function firstCoord(g) { var c = g.coordinates; while (c && typeof c[0] !== 'number') c = c[0]; return c; }
+function mapCoords(c, fn) { return typeof c[0] === 'number' ? fn(c) : c.map(function (x) { return mapCoords(x, fn); }); }
+// Si las coordenadas no son grados, las convierte a WGS84. Devuelve un texto con lo que hizo (o '' si no hizo nada).
+function toWGS84(fc) {
+  var feats = (fc.features || []).filter(function (f) { return f.geometry && /Polygon/.test(f.geometry.type); });
+  if (!feats.length) return '';
+  var c0 = firstCoord(feats[0].geometry);
+  if (!c0 || (Math.abs(c0[0]) <= 180 && Math.abs(c0[1]) <= 90)) return '';
+  var nm = '';
+  try { nm = (fc.crs && fc.crs.properties && fc.crs.properties.name) || ''; } catch (e) {}
+  var m = /(\d{4,5})\s*$/.exec(nm), code = m ? +m[1] : 0, fn, label;
+  if (code === 3857 || code === 900913 || (!code && c0[0] < -1e6)) {
+    fn = function (c) { var R = 6378137; return [c[0] / R * 180 / Math.PI, (2 * Math.atan(Math.exp(c[1] / R)) - Math.PI / 2) * 180 / Math.PI]; }; label = 'Web Mercator (EPSG:3857)';
+  } else {
+    if (!TM[code]) code = c0[0] > 3000000 ? 9377 : 3116;
+    var p = TM[code]; fn = function (c) { return tmInverse(c[0], c[1], p); }; label = 'EPSG:' + code;
+  }
+  feats.forEach(function (f) { f.geometry.coordinates = mapCoords(f.geometry.coordinates, fn); });
+  var c1 = firstCoord(feats[0].geometry);
+  if (!(c1[0] > -82 && c1[0] < -66 && c1[1] > -5 && c1[1] < 14)) throw new Error('Las coordenadas del archivo están en un sistema proyectado que no pude identificar (primer punto: ' + c0[0].toFixed(0) + ', ' + c0[1].toFixed(0) + '). Expórtalo a WGS84 (EPSG:4326) y vuelve a cargarlo.');
+  return 'Coordenadas convertidas desde ' + label + ' a WGS84.';
+}
+
 function setGeo(fc) {
+  var conv = toWGS84(fc);
   var feats = (fc.features || []).filter(function (f) { return f.geometry && /Polygon/.test(f.geometry.type); });
   if (!feats.length) throw new Error('El archivo no contiene polígonos.');
   var keys = Object.keys(feats[0].properties || {});
@@ -619,6 +671,7 @@ function setGeo(fc) {
   $('mapEmpty').hidden = true;
   var st = nMatch + ' de ' + D.length + ' municipios ubicados en el mapa.';
   if (unmatched.length) st += ' Sin ubicar: ' + unmatched.slice(0, 6).join(', ') + (unmatched.length > 6 ? ' y ' + (unmatched.length - 6) + ' más' : '') + '.';
+  if (conv) st += ' ' + conv;
   $('geoStatus').textContent = st;
   if (!S.tabTouched) S.tab = 'map';
   MAP.fitted = false;
@@ -803,26 +856,49 @@ function setBase(id, silent) {
 })();
 
 function readFile(file) {
+  var msg = 'Leyendo «' + file.name + '» (' + (file.size / 1048576).toFixed(1) + ' MB)…';
+  $('mapEmpty').hidden = false; $('emptyMsg').textContent = msg; $('geoStatus').textContent = msg;
   var r = new FileReader();
+  r.onerror = function () { $('emptyMsg').textContent = 'No se pudo leer el archivo.'; };
   r.onload = function () {
-    try { setGeo(JSON.parse(r.result)); renderAll(); }
-    catch (err) { $('geoStatus').textContent = 'No se pudo usar el archivo: ' + err.message; $('emptyMsg').textContent = 'No se pudo usar el archivo: ' + err.message; }
+    setTimeout(function () {
+      try {
+        var j = JSON.parse(r.result);
+        if (j.type === 'Topology') throw new Error('es un TopoJSON; conviértelo a GeoJSON.');
+        if (j.type === 'Feature') j = { type: 'FeatureCollection', features: [j] };
+        GEO_LOCK = true;
+        setGeo(j); renderAll();
+      } catch (err) {
+        if (window.console) console.error(err);
+        var t = 'No se pudo usar el archivo: ' + err.message;
+        $('geoStatus').textContent = t; $('emptyMsg').textContent = t; $('mapEmpty').hidden = false;
+      }
+    }, 30);
   };
   r.readAsText(file);
 }
+var GEO_LOCK = false;
 $('geoFile').addEventListener('change', function (e) { if (e.target.files[0]) readFile(e.target.files[0]); e.target.value = ''; });
 
 function loadRemoteGeo() {
-  var ctrl = ('AbortController' in window) ? new AbortController() : null, timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 20000);
   $('geoStatus').textContent = 'Buscando límites municipales…';
-  fetch(GEO_URL, ctrl ? { signal: ctrl.signal } : {})
-    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(function (j) { clearTimeout(timer); setGeo(j); renderAll(); })
-    .catch(function () {
-      clearTimeout(timer);
-      var m = 'No pude descargar los límites municipales desde esta página. Carga un GeoJSON de municipios (por ejemplo el MGN del DANE) para activar el mapa.';
-      $('emptyMsg').textContent = m; $('geoStatus').textContent = 'Mapa sin límites: usa «Cargar GeoJSON».';
-    });
+  function getJson(url, ms) {
+    var ctrl = ('AbortController' in window) ? new AbortController() : null, timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, ms);
+    return fetch(url, ctrl ? { signal: ctrl.signal } : {}).then(function (r) { clearTimeout(timer); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  }
+  function use(j) { if (GEO_LOCK || GEO.ok) return; setGeo(j); renderAll(); }
+  // 1) un archivo municipios.geojson junto a esta página (funciona al publicarla en un sitio web)
+  var local = ['municipios.geojson', 'municipios.json'].reduce(function (p, name) {
+    return p.catch(function () { return getJson(name, 15000).then(function (j) { if (!j || !j.features) throw new Error('no es GeoJSON'); use(j); return true; }); });
+  }, Promise.reject());
+  local.catch(function () {
+    // 2) descarga desde el geoportal de Superservicios
+    return getJson(GEO_URL, 20000).then(use);
+  }).catch(function () {
+    if (GEO_LOCK || GEO.ok) return;
+    var m = 'No pude descargar los límites municipales automáticamente. Carga un GeoJSON de municipios (por ejemplo el MGN del DANE), o guarda uno como «municipios.geojson» junto a esta página.';
+    $('emptyMsg').textContent = m; $('geoStatus').textContent = 'Mapa sin límites: usa «Cargar GeoJSON».';
+  });
 }
 
 /* ---------- Dispersión ---------- */
@@ -948,5 +1024,5 @@ renderAll();
 loadRemoteGeo();
 })();
 </script>
-
-</body></html>
+</body>
+</html>
